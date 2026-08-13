@@ -1,0 +1,195 @@
+<script>
+'use strict';
+async function refreshCloudRecords({ announce = false } = {}) {
+  if (!cloudAvailable) {
+    showToast('目前尚未啟用 Google Sheet 同步', 'error');
+    return;
+  }
+  clearTimeout(saveTimer);
+  const current = persistCurrent({ cloud: false });
+  cloudMessage.textContent = '正在載入 Google Sheet 草稿…';
+  try {
+    if (current) await enqueueCloudSync(current);
+    const cloudRecords = await runServer('listRecords');
+    records = mergeRecords(records, (cloudRecords || []).map((record) => ({ ...record, _cloud: true })));
+    writeLocalRecords();
+    renderDrafts();
+    const selected = getCurrentRecord();
+    if (selected) loadRecordIntoForm(selected);
+    cloudMessage.textContent = `同步完成；草稿最後更新後保留 ${APP_CONFIG.retentionDays} 天。`;
+    if (announce) showToast('草稿清單已同步');
+  } catch (error) {
+    console.error(error);
+    cloudMessage.textContent = `同步失敗：${error.message || '未知錯誤'}`;
+    if (announce) showToast(error.message || '同步失敗', 'error');
+  }
+}
+
+function buildResumeLink(recordId, token) {
+  const base = APP_CONFIG.webAppUrl || window.location.href.split(/[?#]/)[0];
+  const separator = base.includes('?') ? '&' : '?';
+  return `${base}${separator}record=${encodeURIComponent(recordId)}#token=${encodeURIComponent(token)}`;
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const input = document.createElement('textarea');
+  input.value = text;
+  input.setAttribute('readonly', '');
+  input.style.position = 'fixed';
+  input.style.opacity = '0';
+  document.body.appendChild(input);
+  input.select();
+  const ok = document.execCommand('copy');
+  input.remove();
+  if (!ok) throw new Error('無法自動複製，請手動複製。');
+}
+
+async function copyResumeLink() {
+  if (!cloudAvailable) {
+    showToast('請先完成 Apps Script 初始化與部署', 'error');
+    return;
+  }
+  clearTimeout(saveTimer);
+  clearTimeout(cloudSyncTimer);
+  try {
+    const record = persistCurrent({ cloud: false });
+    const saved = await enqueueCloudSync(record);
+    const response = await runServer('issueAccessToken', saved.id, getAccessToken(saved.id));
+    if (!response?.accessToken) throw new Error('無法建立續填權限。');
+    setAccessToken(saved.id, response.accessToken);
+    replaceRecord({ ...response.record, _local: true, _cloud: true });
+    writeLocalRecords();
+    updateRecordMeta(getCurrentRecord());
+    const link = buildResumeLink(saved.id, response.accessToken);
+    await copyText(link);
+    showToast('續填連結已複製；請妥善保管');
+    cloudMessage.textContent = '取得完整續填連結的人可編輯這筆草稿；建立新連結會使舊連結失效。';
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || '續填連結建立失敗', 'error');
+  }
+}
+
+async function bootstrapCloud() {
+  if (!globalThis.google?.script?.run) {
+    showLocalOnly('這個頁面必須由部署後的 Apps Script Web App 開啟，才能使用 Google Sheet 同步。');
+    return;
+  }
+
+  cloudMessage.textContent = '正在連接 Google Sheet…';
+  try {
+    const token = requestedAccessToken || getAccessToken(requestedRecordId);
+    const result = await runServer('bootstrapApp', requestedRecordId, token);
+    Object.assign(APP_CONFIG, result?.config || {});
+    cloudAvailable = true;
+    hideLocalOnlyBanner();
+    if (requestedRecordId && requestedAccessToken) setAccessToken(requestedRecordId, requestedAccessToken);
+
+    const cloudRecords = (result?.records || []).map((record) => ({ ...record, _cloud: true }));
+    records = mergeRecords(records, cloudRecords);
+    writeLocalRecords();
+
+    let selected = null;
+    if (result?.requestedRecordId) {
+      selected = records.find((record) => record.id === result.requestedRecordId) || null;
+    }
+    if (!selected) {
+      const remembered = localStorage.getItem(CURRENT_KEY);
+      selected = records.find((record) => record.id === remembered) || records[0] || null;
+    }
+    if (!selected) {
+      selected = { ...defaultRecord(), _local: true };
+      records = [selected];
+      writeLocalRecords();
+    }
+
+    document.querySelector('#retention-note').textContent = `草稿最後更新後保留 ${APP_CONFIG.retentionDays} 天；過期資料由每日排程清除。`;
+    form.elements.summary.maxLength = APP_CONFIG.maxSummaryChars || 35000;
+    loadRecordIntoForm(selected);
+    saveStatus.textContent = 'Google Sheet 同步已啟用';
+    saveStatus.dataset.state = 'synced';
+    cloudMessage.textContent = APP_CONFIG.userKeyAvailable
+      ? '已連接 Google Sheet；同一使用者通常可看到自己的近期草稿，也可使用續填連結跨裝置開啟。'
+      : '已連接 Google Sheet；請使用「複製續填連結」在其他裝置繼續。';
+  } catch (error) {
+    console.error(error);
+    showLocalOnly(error.message || 'Google Sheet 連線失敗。');
+  }
+}
+
+
+
+function bindEvents() {
+  form.addEventListener('input', (event) => {
+    if (event.target.name === 'summary') updateSummaryCount();
+    scheduleSave();
+  });
+  form.addEventListener('change', (event) => {
+    if (event.target.name === 'meetingType') updateConditionalFields();
+    scheduleSave();
+  });
+  draftList.addEventListener('click', (event) => {
+    const card = event.target.closest('[data-record-id]');
+    if (!card) return;
+    clearTimeout(saveTimer);
+    persistCurrent({ cloud: true });
+    const record = records.find((item) => item.id === card.dataset.recordId);
+    if (record) loadRecordIntoForm(record);
+    if (window.innerWidth < 900) draftsPanel.classList.remove('drafts-panel-open');
+  });
+  document.querySelector('#new-record').addEventListener('click', createNewRecord);
+  document.querySelector('#save-record').addEventListener('click', async () => {
+    const record = persistCurrent({ cloud: false });
+    if (cloudAvailable) {
+      try { await enqueueCloudSync(record, true); } catch (error) { /* handled in sync */ }
+    } else {
+      showToast('草稿已儲存在此裝置');
+    }
+  });
+  document.querySelector('#print-record').addEventListener('click', printCurrent);
+  document.querySelector('#mobile-print').addEventListener('click', printCurrent);
+  document.querySelector('#delete-record').addEventListener('click', deleteCurrent);
+  document.querySelector('#export-record').addEventListener('click', exportCurrent);
+  document.querySelector('#import-record').addEventListener('change', (event) => {
+    const file = event.target.files?.[0];
+    if (file) importRecord(file);
+    event.target.value = '';
+  });
+  document.querySelector('#toggle-drafts').addEventListener('click', () => draftsPanel.classList.toggle('drafts-panel-open'));
+  document.querySelector('#sync-now').addEventListener('click', () => refreshCloudRecords({ announce: true }));
+  document.querySelector('#mobile-sync').addEventListener('click', () => refreshCloudRecords({ announce: true }));
+  document.querySelector('#copy-resume-link').addEventListener('click', copyResumeLink);
+  document.querySelector('#copy-resume-link-mobile').addEventListener('click', copyResumeLink);
+  document.querySelector('#open-new-tab').addEventListener('click', () => {
+    const target = APP_CONFIG.webAppUrl || window.location.href;
+    window.open(target, '_blank', 'noopener,noreferrer');
+  });
+  window.addEventListener('beforeunload', () => {
+    clearTimeout(saveTimer);
+    persistCurrent({ cloud: false });
+  });
+  window.addEventListener('afterprint', () => { printRoot.innerHTML = ''; });
+}
+
+function initialize() {
+  setCloudControlsEnabled(false);
+  document.querySelector('#retention-note').textContent = `本機草稿預設保留 ${APP_CONFIG.retentionDays} 天；完成部署後會同步至 Google Sheet。`;
+  records = readLocalRecords();
+  const requested = localStorage.getItem(CURRENT_KEY);
+  let current = records.find((record) => record.id === requested) || records[0];
+  if (!current) {
+    current = { ...defaultRecord(), _local: true };
+    records = [current];
+    writeLocalRecords();
+  }
+  bindEvents();
+  loadRecordIntoForm(current);
+  bootstrapCloud();
+}
+
+initialize();
+</script>
