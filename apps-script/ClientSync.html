@@ -1,0 +1,205 @@
+<script>
+'use strict';
+function persistCurrent({ cloud = true, announce = false } = {}) {
+  if (isHydrating) return null;
+  const record = formToRecord();
+  currentRecordId = record.id;
+  replaceRecord(record);
+  writeLocalRecords();
+  localStorage.setItem(CURRENT_KEY, currentRecordId);
+  updateRecordMeta(record);
+  renderDrafts();
+  saveStatus.textContent = cloudAvailable ? '已存本機，等待同步' : '已存於此裝置';
+  saveStatus.dataset.state = 'saved';
+  if (announce) showToast(cloudAvailable ? '草稿已儲存，正在同步' : '草稿已儲存在此裝置');
+
+  if (cloud && cloudAvailable) {
+    clearTimeout(cloudSyncTimer);
+    cloudSyncTimer = setTimeout(() => enqueueCloudSync(record), 900);
+  }
+  return record;
+}
+
+function enqueueCloudSync(record, announce = false) {
+  const snapshot = JSON.parse(JSON.stringify(record));
+  cloudSyncChain = cloudSyncChain
+    .catch(() => undefined)
+    .then(() => syncRecordToCloud(snapshot, announce));
+  return cloudSyncChain;
+}
+
+async function syncRecordToCloud(record, announce = false) {
+  if (!cloudAvailable || !record) return record;
+  try {
+    if (record.id === currentRecordId) {
+      saveStatus.textContent = '同步中…';
+      saveStatus.dataset.state = 'syncing';
+    }
+    const response = await runServer('saveRecord', record, getAccessToken(record.id));
+    const saved = response?.record;
+    if (!saved) throw new Error('伺服器未回傳已儲存的草稿。');
+    if (response.accessToken) setAccessToken(saved.id, response.accessToken);
+    records = mergeRecords(records, [{ ...saved, _local: true, _cloud: true }]);
+    writeLocalRecords();
+    renderDrafts();
+    if (saved.id === currentRecordId) {
+      updateRecordMeta(getCurrentRecord());
+      saveStatus.textContent = '本機與 Google Sheet 已同步';
+      saveStatus.dataset.state = 'synced';
+    }
+    cloudMessage.textContent = `草稿最後更新後保留 ${APP_CONFIG.retentionDays} 天。`;
+    if (announce) showToast('草稿已同步');
+    return saved;
+  } catch (error) {
+    console.error(error);
+    if (record.id === currentRecordId) {
+      saveStatus.textContent = '同步失敗，本機仍已保存';
+      saveStatus.dataset.state = 'error';
+    }
+    cloudMessage.textContent = error.message || '同步失敗；本機草稿仍保留。';
+    if (announce) showToast(error.message || '同步失敗', 'error');
+    throw error;
+  }
+}
+
+function scheduleSave() {
+  if (isHydrating) return;
+  saveStatus.textContent = '編輯中…';
+  saveStatus.dataset.state = 'editing';
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => persistCurrent({ cloud: true }), 650);
+}
+
+
+function loadRecordIntoForm(record) {
+  isHydrating = true;
+  currentRecordId = record.id;
+  const elements = form.elements;
+  const fields = [
+    "department", "meetingDate", "otherMeetingType", "topic", "reporter", "chairperson",
+    "startTime", "endTime", "location", "participantCount", "summary", "recorder", "reviewer"
+  ];
+  fields.forEach((name) => {
+    if (elements[name]) elements[name].value = record[name] ?? "";
+  });
+  [...form.querySelectorAll('input[name="meetingType"]')].forEach((input) => {
+    input.checked = input.value === String(record.meetingType || "");
+  });
+  [...form.querySelectorAll('input[name="meetingSubtype"]')].forEach((input) => {
+    input.checked = input.value === String(record.meetingSubtype || "");
+  });
+  localStorage.setItem(CURRENT_KEY, currentRecordId);
+  updateConditionalFields();
+  updateSummaryCount();
+  updateRecordMeta(record);
+  renderDrafts();
+  isHydrating = false;
+}
+
+function createNewRecord() {
+  persistCurrent({ cloud: true });
+  const record = defaultRecord();
+  replaceRecord({ ...record, _local: true });
+  writeLocalRecords();
+  loadRecordIntoForm(record);
+  showToast("已建立新草稿");
+  if (window.innerWidth < 900) draftsPanel.classList.remove("drafts-panel-open");
+}
+
+function formatDate(dateString) {
+  if (!dateString) return "未填日期";
+  const date = new Date(`${dateString}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return dateString;
+  return new Intl.DateTimeFormat("zh-TW", { year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+}
+
+function formatDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-TW", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
+function updateRecordMeta(record) {
+  if (!record) {
+    recordMeta.textContent = "尚未儲存";
+    return;
+  }
+  const expiry = record.expiresAt ? formatDateTime(record.expiresAt) : "未設定";
+  recordMeta.textContent = `最後更新：${formatDateTime(record.updatedAt)}｜預計到期：${expiry}`;
+}
+
+function renderDrafts() {
+  if (!records.length) {
+    draftList.innerHTML = '<p class="empty-state">尚無草稿。</p>';
+    return;
+  }
+  draftList.innerHTML = records.map((record) => {
+    const title = escapeHtml(record.topic || "未命名研討會");
+    const department = escapeHtml(record.department || "未填科部");
+    const selected = record.id === currentRecordId ? " draft-card-active" : "";
+    const cloudBadge = record._cloud ? '<span class="mini-badge">雲端</span>' : '<span class="mini-badge mini-badge-muted">本機</span>';
+    return `
+      <button class="draft-card${selected}" type="button" data-record-id="${record.id}">
+        <span class="draft-card-top"><strong>${title}</strong>${cloudBadge}</span>
+        <span>${department}｜${escapeHtml(formatDate(record.meetingDate))}</span>
+        <small>更新 ${escapeHtml(formatDateTime(record.updatedAt))}</small>
+      </button>
+    `;
+  }).join("");
+}
+
+function updateConditionalFields() {
+  const type = form.querySelector('input[name="meetingType"]:checked')?.value || "";
+  document.querySelector("#joint-subtype").hidden = type !== "5";
+  document.querySelector("#teaching-subtype").hidden = type !== "9";
+  document.querySelector("#other-type-field").hidden = type !== "14";
+  if (!["5", "9"].includes(type)) {
+    [...form.querySelectorAll('input[name="meetingSubtype"]')].forEach((input) => { input.checked = false; });
+  } else {
+    [...form.querySelectorAll('input[name="meetingSubtype"]')].forEach((input) => {
+      input.disabled = !input.value.startsWith(`${type}-`);
+      if (input.disabled) input.checked = false;
+    });
+  }
+}
+
+function updateSummaryCount() {
+  const value = form.elements.summary.value || "";
+  summaryCount.textContent = `${[...value].length.toLocaleString("zh-TW")} 字`;
+}
+
+
+async function deleteCurrent() {
+  const record = getCurrentRecord();
+  if (!record) return;
+  const label = record.topic || '此草稿';
+  if (!window.confirm(`確定刪除「${label}」？此動作無法復原。`)) return;
+
+  if (cloudAvailable && record._cloud) {
+    try {
+      await runServer('deleteRecord', record.id, getAccessToken(record.id));
+    } catch (error) {
+      console.error(error);
+      showToast(error.message || '雲端草稿刪除失敗', 'error');
+      return;
+    }
+  }
+
+  records = records.filter((item) => item.id !== record.id);
+  removeAccessToken(record.id);
+  writeLocalRecords();
+  const next = records[0] || defaultRecord();
+  if (!records.length) {
+    records = [{ ...next, _local: true }];
+    writeLocalRecords();
+  }
+  loadRecordIntoForm(next);
+  showToast('草稿已刪除');
+}
+</script>
