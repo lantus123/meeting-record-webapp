@@ -1,0 +1,253 @@
+<script>
+'use strict';
+
+const STORAGE_KEY = 'meeting-record-form.records.v2';
+const CURRENT_KEY = 'meeting-record-form.current.v2';
+const TOKEN_KEY = 'meeting-record-form.tokens.v2';
+const APP_CONFIG = {
+  retentionDays: 14,
+  maxSummaryChars: 35000,
+  webAppUrl: '',
+  userKeyAvailable: false
+};
+
+const form = document.querySelector('#meeting-form');
+const draftList = document.querySelector('#draft-list');
+const saveStatus = document.querySelector('#save-status');
+const recordMeta = document.querySelector('#record-meta');
+const cloudMessage = document.querySelector('#cloud-message');
+const toast = document.querySelector('#toast');
+const draftsPanel = document.querySelector('#drafts-panel');
+const printRoot = document.querySelector('#print-root');
+const summaryCount = document.querySelector('#summary-count');
+const setupBanner = document.querySelector('#setup-banner');
+const setupMessage = document.querySelector('#setup-message');
+const requestedRecordId = String(document.body.dataset.requestedRecord || '');
+const requestedAccessToken = new URLSearchParams(window.location.hash.replace(/^#/, '')).get('token') || '';
+
+let records = [];
+let currentRecordId = null;
+let cloudAvailable = false;
+let saveTimer = null;
+let cloudSyncTimer = null;
+let cloudSyncChain = Promise.resolve();
+let isHydrating = false;
+let toastTimer = null;
+let accessTokens = readAccessTokens();
+
+const meetingTypes = {
+  '1': '臨床研討會',
+  '2': '死亡暨倂發症討論會',
+  '3': '臨床病理討論會',
+  '4': '外科組織病理討論會',
+  '5': '聯合討論會',
+  '6': '術前/後討論會',
+  '7': '學術期刊討論會',
+  '8': '晨報會(新入院病例)',
+  '9': '教 學',
+  '10': '外賓專題演講',
+  '11': '醫法倫討論',
+  '12': '專題討論',
+  '13': '見實習醫學生小組討論',
+  '14': '其他',
+  '15': '教學門診',
+  '16': '住診教學'
+};
+
+function createId() {
+  if (globalThis.crypto?.randomUUID) return `record-${globalThis.crypto.randomUUID()}`;
+  return `record-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+const defaultRecord = () => {
+  const now = new Date();
+  const date = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(now);
+  return {
+    id: createId(),
+    department: '',
+    meetingDate: date,
+    meetingType: '',
+    meetingSubtype: '',
+    otherMeetingType: '',
+    topic: '',
+    reporter: '',
+    chairperson: '',
+    startTime: '',
+    endTime: '',
+    location: '',
+    participantCount: '',
+    summary: '',
+    recorder: '',
+    reviewer: '',
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + APP_CONFIG.retentionDays * 86400000).toISOString()
+  };
+};
+
+function readAccessTokens() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(TOKEN_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    console.error(error);
+    return {};
+  }
+}
+
+function writeAccessTokens() {
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(accessTokens));
+}
+
+function getAccessToken(recordId) {
+  return String(accessTokens[recordId] || '');
+}
+
+function setAccessToken(recordId, token) {
+  if (!recordId || !token) return;
+  accessTokens[recordId] = String(token);
+  writeAccessTokens();
+}
+
+function removeAccessToken(recordId) {
+  if (!recordId) return;
+  delete accessTokens[recordId];
+  writeAccessTokens();
+}
+
+function runServer(functionName, ...args) {
+  return new Promise((resolve, reject) => {
+    if (!globalThis.google?.script?.run) {
+      reject(new Error('目前頁面不是由 Google Apps Script Web App 提供。'));
+      return;
+    }
+    const runner = google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler((error) => reject(new Error(error?.message || String(error || '伺服器操作失敗'))));
+    const method = runner[functionName];
+    if (typeof method !== 'function') {
+      reject(new Error(`找不到伺服器函式：${functionName}`));
+      return;
+    }
+    method.apply(runner, args);
+  });
+}
+
+function setCloudControlsEnabled(enabled) {
+  ['#sync-now', '#mobile-sync', '#copy-resume-link', '#copy-resume-link-mobile'].forEach((selector) => {
+    const button = document.querySelector(selector);
+    if (button) button.disabled = !enabled;
+  });
+}
+
+function showLocalOnly(message) {
+  cloudAvailable = false;
+  setupBanner.hidden = false;
+  setupMessage.textContent = message || '尚未完成 Google Apps Script 初始化，或目前無法連線。';
+  cloudMessage.textContent = '目前僅儲存在這個瀏覽器；可先匯出 JSON 備份。';
+  saveStatus.textContent = '本機模式';
+  saveStatus.dataset.state = 'local';
+  setCloudControlsEnabled(false);
+}
+
+function hideLocalOnlyBanner() {
+  setupBanner.hidden = true;
+  setCloudControlsEnabled(true);
+}
+
+
+function showToast(message, tone = "default") {
+  clearTimeout(toastTimer);
+  toast.textContent = message;
+  toast.dataset.tone = tone;
+  toast.classList.add("toast-visible");
+  toastTimer = setTimeout(() => toast.classList.remove("toast-visible"), 2600);
+}
+
+function readLocalRecords() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    if (!Array.isArray(parsed)) return [];
+    const now = Date.now();
+    const active = parsed.filter((record) => !record.expiresAt || new Date(record.expiresAt).getTime() > now);
+    if (active.length !== parsed.length) localStorage.setItem(STORAGE_KEY, JSON.stringify(active));
+    return active.map((record) => ({ ...record, _local: true }));
+  } catch (error) {
+    console.error(error);
+    return [];
+  }
+}
+
+function writeLocalRecords() {
+  const clean = records.map(({ _cloud, _local, ...record }) => record);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(clean));
+}
+
+function mergeRecords(...groups) {
+  const map = new Map();
+  groups.flat().forEach((record) => {
+    if (!record?.id) return;
+    const existing = map.get(record.id);
+    if (!existing) {
+      map.set(record.id, { ...record });
+      return;
+    }
+    const existingTime = new Date(existing.updatedAt || 0).getTime();
+    const incomingTime = new Date(record.updatedAt || 0).getTime();
+    const latest = incomingTime >= existingTime ? record : existing;
+    map.set(record.id, {
+      ...existing,
+      ...latest,
+      _local: Boolean(existing._local || record._local),
+      _cloud: Boolean(existing._cloud || record._cloud)
+    });
+  });
+  return [...map.values()].sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+}
+
+function getCurrentRecord() {
+  return records.find((record) => record.id === currentRecordId) || null;
+}
+
+function formToRecord() {
+  const base = getCurrentRecord() || defaultRecord();
+  const data = new FormData(form);
+  const now = new Date();
+  return {
+    ...base,
+    id: currentRecordId || base.id,
+    department: String(data.get("department") || "").trim(),
+    meetingDate: String(data.get("meetingDate") || ""),
+    meetingType: String(data.get("meetingType") || ""),
+    meetingSubtype: String(data.get("meetingSubtype") || ""),
+    otherMeetingType: String(data.get("otherMeetingType") || "").trim(),
+    topic: String(data.get("topic") || "").trim(),
+    reporter: String(data.get("reporter") || "").trim(),
+    chairperson: String(data.get("chairperson") || "").trim(),
+    startTime: String(data.get("startTime") || ""),
+    endTime: String(data.get("endTime") || ""),
+    location: String(data.get("location") || "").trim(),
+    participantCount: String(data.get("participantCount") || ""),
+    summary: String(data.get("summary") || ""),
+    recorder: String(data.get("recorder") || "").trim(),
+    reviewer: String(data.get("reviewer") || "").trim(),
+    createdAt: base.createdAt || now.toISOString(),
+    updatedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + APP_CONFIG.retentionDays * 86400000).toISOString(),
+    _local: true,
+    _cloud: Boolean(base._cloud)
+  };
+}
+
+function replaceRecord(record) {
+  const index = records.findIndex((item) => item.id === record.id);
+  if (index >= 0) records[index] = record;
+  else records.push(record);
+  records.sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+}
+</script>

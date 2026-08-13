@@ -1,0 +1,10 @@
+{
+  "name": "meeting-record-webapp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Google Apps Script meeting record form with short-term Google Sheet storage and A4 printing.",
+  "scripts": {
+    "test": "node scripts/validate.mjs"
+  },
+  "license": "MIT"
+}

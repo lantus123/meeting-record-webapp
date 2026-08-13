@@ -1,0 +1,196 @@
+<script>
+'use strict';
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function formatPrintDate(dateString) {
+  if (!dateString) return { year: "", month: "", day: "" };
+  const [year = "", month = "", day = ""] = dateString.split("-");
+  return { year, month: month.replace(/^0/, ""), day: day.replace(/^0/, "") };
+}
+
+function formatPrintTime(timeString) {
+  if (!timeString) return { hour: "", minute: "" };
+  const [hour = "", minute = ""] = String(timeString).split(":");
+  return { hour, minute };
+}
+
+function mark(kind, checked) {
+  return `<span class="print-${kind}${checked ? " is-checked" : ""}" aria-hidden="true"></span>`;
+}
+
+function typeItem(record, code, label) {
+  return `<span class="print-type-item">${mark("box", record.meetingType === code)}<b>${code}</b>${escapeHtml(label)}</span>`;
+}
+
+function subtypeItem(record, code, label) {
+  return `<span class="print-subtype-item">${mark("circle", record.meetingSubtype === code)}${escapeHtml(code)} ${escapeHtml(label)}</span>`;
+}
+
+function fitTextToBox(text, className) {
+  const chars = [...String(text || "")];
+  if (!chars.length) return { fit: "", rest: "" };
+  const measure = document.createElement("div");
+  measure.className = `${className} print-measure-box`;
+  measure.setAttribute("aria-hidden", "true");
+  document.body.appendChild(measure);
+  let low = 0;
+  let high = chars.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    measure.textContent = chars.slice(0, mid).join("");
+    if (measure.scrollHeight <= measure.clientHeight + 1) low = mid;
+    else high = mid - 1;
+  }
+  measure.remove();
+  return {
+    fit: chars.slice(0, low).join(""),
+    rest: chars.slice(low).join("")
+  };
+}
+
+function buildPrintPages(record) {
+  const date = formatPrintDate(record.meetingDate);
+  const firstSplit = fitTextToBox(record.summary, "print-summary-text print-summary-page1-size");
+  const secondSplit = fitTextToBox(firstSplit.rest, "print-summary-text print-summary-page2-size");
+  const overflow = secondSplit.rest;
+  const other = record.meetingType === "14" && record.otherMeetingType ? `：${record.otherMeetingType}` : "";
+  const start = formatPrintTime(record.startTime);
+  const end = formatPrintTime(record.endTime);
+  const titleDept = escapeHtml(record.department || "　");
+  const dateHtml = `${escapeHtml(date.year)} 年 ${escapeHtml(date.month)} 月 ${escapeHtml(date.day)} 日`;
+
+  printRoot.innerHTML = `
+    <section class="print-page print-page-one">
+      <header class="print-header">
+        <strong>（ ${titleDept} ）科、部研討會記錄單(一)</strong>
+        <span>${dateHtml}　102.01 修訂</span>
+      </header>
+      <div class="print-main-box">
+        <div class="print-types">
+          <div class="print-type-line"><b class="print-type-label">研討會名稱：</b>
+            ${typeItem(record, "1", "臨床研討會")}
+            ${typeItem(record, "2", "死亡暨倂發症討論會")}
+            ${typeItem(record, "3", "臨床病理討論會")}
+            ${typeItem(record, "4", "外科組織病理討論會")}
+          </div>
+          <div class="print-type-line print-indented">
+            ${typeItem(record, "5", "聯合討論會")}
+            <span class="print-subtypes">(${subtypeItem(record, "5-1", "跨科、部")} ${subtypeItem(record, "5-2", "跨領域")} ${subtypeItem(record, "5-3", "院際")})</span>
+            ${typeItem(record, "6", "術前/後討論會")}
+            ${typeItem(record, "7", "學術期刊討論會")}
+          </div>
+          <div class="print-type-line print-indented">
+            ${typeItem(record, "8", "晨報會(新入院病例)")}
+            ${typeItem(record, "9", "教 學")}
+            <span class="print-subtypes">(${subtypeItem(record, "9-1", "專題、教學演講")} ${subtypeItem(record, "9-2", "座談會")} ${subtypeItem(record, "9-3", "全院學術")})</span>
+          </div>
+          <div class="print-type-line print-indented">
+            ${typeItem(record, "10", "外賓專題演講")}
+            ${typeItem(record, "11", "醫法倫討論")}
+            ${typeItem(record, "12", "專題討論")}
+            ${typeItem(record, "13", "見實習醫學生小組討論")}
+          </div>
+          <div class="print-type-line print-indented">
+            ${typeItem(record, "14", `其他${other}`)}
+            ${typeItem(record, "15", "教學門診")}
+            ${typeItem(record, "16", "住診教學")}
+          </div>
+        </div>
+        <div class="print-row print-topic-row"><span class="print-label-cell">研討主題</span><span class="print-value-cell">${escapeHtml(record.topic)}</span></div>
+        <div class="print-row print-two-pair-row">
+          <span class="print-label-cell">報　告　人</span><span class="print-value-cell">${escapeHtml(record.reporter)}</span>
+          <span class="print-label-cell narrow">主　持　人</span><span class="print-value-cell short">${escapeHtml(record.chairperson)}</span>
+        </div>
+        <div class="print-row print-two-pair-row">
+          <span class="print-label-cell">時　　　間</span><span class="print-value-cell">${escapeHtml(start.hour)}　點　${escapeHtml(start.minute)}　分至　${escapeHtml(end.hour)}　點　${escapeHtml(end.minute)}　分</span>
+          <span class="print-label-cell narrow">地　　點</span><span class="print-value-cell short">${escapeHtml(record.location)}</span>
+        </div>
+        <div class="print-row print-attendance-row">
+          <span class="print-label-cell">參加人數</span><span class="print-value-cell count">${escapeHtml(record.participantCount)}</span>
+          <span class="print-label-cell signature-label">簽名</span><span class="print-value-cell signature-space"></span>
+        </div>
+        <div class="print-summary-box">
+          <div class="print-summary-heading">討論內容摘要(或全文)：</div>
+          <div class="print-summary-text print-summary-page1-size">${escapeHtml(firstSplit.fit)}</div>
+        </div>
+      </div>
+      <div class="print-notes">
+        <span>備註：</span>
+        <div>
+          <div>(一)臨床研討會(討論臨床處置、死亡及併發症等)、臨床病理討論會、外科組織病理討論會等應依病例報告、討論、分析、總結、參考文獻之順序書寫。</div>
+          <div>(二)學術期刊討論會須載明期刊出處及當場討論的內容。</div>
+        </div>
+      </div>
+      <div class="print-signatures"><span>記　錄：${escapeHtml(record.recorder)}</span><span>主持人(或主任)批閱：${escapeHtml(record.reviewer)}</span></div>
+    </section>
+
+    <section class="print-page print-page-two">
+      <header class="print-header">
+        <strong>（ ${titleDept} ）科、部研討會記錄單(二)</strong>
+        <span>${dateHtml}　102.01 修訂</span>
+      </header>
+      <div class="print-continuation-box">
+        <div class="print-summary-text print-summary-page2-size">${escapeHtml(secondSplit.fit)}</div>
+        ${overflow ? `<div class="print-overflow-warning">※ 內容超過兩頁，尚有 ${[...overflow].length} 字未列入。請精簡內容或另附附件。</div>` : ""}
+      </div>
+      <div class="print-signatures"><span>記　錄：${escapeHtml(record.recorder)}</span><span>主持人(或主任)批閱：${escapeHtml(record.reviewer)}</span></div>
+    </section>
+  `;
+}
+
+function printCurrent() {
+  clearTimeout(saveTimer);
+  persistCurrent({ cloud: true });
+  const record = getCurrentRecord();
+  if (!record) return;
+  buildPrintPages(record);
+  requestAnimationFrame(() => requestAnimationFrame(() => window.print()));
+}
+
+function exportCurrent() {
+  persistCurrent({ cloud: false });
+  const record = getCurrentRecord();
+  if (!record) return;
+  const { _local, _cloud, ...exportable } = record;
+  const blob = new Blob([JSON.stringify(exportable, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  const safeDate = record.meetingDate || "undated";
+  anchor.href = url;
+  anchor.download = `meeting-record-${safeDate}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+async function importRecord(file) {
+  try {
+    const raw = await file.text();
+    const parsed = JSON.parse(raw);
+    const now = new Date();
+    const record = {
+      ...defaultRecord(),
+      ...parsed,
+      id: createId(),
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + APP_CONFIG.retentionDays * 86400000).toISOString(),
+      _local: true,
+      _cloud: false
+    };
+    replaceRecord(record);
+    writeLocalRecords();
+    loadRecordIntoForm(record);
+    showToast("記錄已匯入");
+  } catch (error) {
+    console.error(error);
+    showToast("匯入失敗：檔案格式不正確", "error");
+  }
+}
+</script>
