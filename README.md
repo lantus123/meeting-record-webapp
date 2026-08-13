@@ -33,7 +33,10 @@ apps-script/
   Setup.gs           一次性初始化與每日清除排程
   Index.html         表單頁面
   Styles.html        響應式與 A4 列印樣式
-  Client.html        本機草稿、同步、續填連結與列印邏輯
+  ClientCore.html    共用狀態與本機草稿
+  ClientSync.html    雲端同步與草稿清單
+  ClientPrint.html   A4 列印與 JSON 備援
+  ClientApp.html     跨裝置連結、事件與初始化
   appsscript.json    Apps Script manifest
 scripts/
   validate.mjs       無外部套件的靜態檢查
@@ -51,7 +54,7 @@ scripts/
    - `.gs` 檔建立為「指令碼」
    - `.html` 檔建立為「HTML」
    - 在「專案設定」勾選顯示 `appsscript.json`，再貼上 manifest
-4. 確認檔名完全一致，尤其是 `Index`、`Styles`、`Client`。
+4. 確認檔名完全一致，尤其是 `Index`、`Styles` 與四個 `Client*` HTML 檔。
 
 ### 2. 初始化 Google Sheet
 
