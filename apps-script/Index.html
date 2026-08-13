@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f7f8fa" />
+  <meta name="description" content="科、部研討會記錄單：手機填寫、短期保存、電腦列印。" />
+  <title>科、部研討會記錄單</title>
+  <?!= include('Styles'); ?>
+</head>
+<body data-requested-record="<?= requestedRecordId ?>">
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">Meeting Record</p>
+      <h1>科、部研討會記錄單</h1>
+    </div>
+    <div class="header-actions">
+      <span id="save-status" class="status-pill" aria-live="polite">本機模式</span>
+      <button id="sync-now" class="button button-ghost" type="button">同步草稿</button>
+      <button id="copy-resume-link" class="button button-secondary" type="button">複製續填連結</button>
+      <button id="open-new-tab" class="button button-ghost" type="button">新分頁開啟</button>
+    </div>
+  </header>
+
+  <div class="mobile-toolbar">
+    <button id="toggle-drafts" class="button button-secondary" type="button">草稿</button>
+    <button id="mobile-sync" class="button button-secondary" type="button">同步</button>
+    <button id="mobile-print" class="button button-primary" type="button">列印 / PDF</button>
+  </div>
+
+  <div id="setup-banner" class="setup-banner" role="alert" hidden>
+    <div>
+      <strong>目前僅使用本機草稿</strong>
+      <p id="setup-message">尚未完成 Google Apps Script 初始化，或目前無法連線。</p>
+    </div>
+    <span>表單仍可填寫、匯出 JSON 與列印。</span>
+  </div>
+
+  <main class="app-shell">
+    <aside id="drafts-panel" class="drafts-panel" aria-label="草稿清單">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Drafts</p>
+          <h2>短期草稿</h2>
+        </div>
+        <button id="new-record" class="icon-button" type="button" aria-label="新增記錄" title="新增記錄">＋</button>
+      </div>
+      <p id="retention-note" class="muted compact"></p>
+      <div id="draft-list" class="draft-list"></div>
+      <div class="panel-footer">
+        <button id="copy-resume-link-mobile" class="button button-secondary button-block" type="button">複製跨裝置續填連結</button>
+        <button id="export-record" class="button button-ghost button-block" type="button">匯出目前記錄（JSON）</button>
+        <label class="button button-ghost button-block file-button">
+          匯入記錄（JSON）
+          <input id="import-record" type="file" accept="application/json,.json" hidden />
+        </label>
+      </div>
+    </aside>
+
+    <section class="editor-panel">
+      <div class="editor-toolbar">
+        <div>
+          <p id="record-meta" class="muted compact">尚未儲存</p>
+          <p id="cloud-message" class="cloud-message" aria-live="polite"></p>
+        </div>
+        <div class="toolbar-actions">
+          <button id="delete-record" class="button button-danger" type="button">刪除</button>
+          <button id="save-record" class="button button-secondary" type="button">立即儲存</button>
+          <button id="print-record" class="button button-primary" type="button">列印 / 另存 PDF</button>
+        </div>
+      </div>
+
+      <form id="meeting-form" novalidate>
+        <section class="form-card">
+          <div class="section-heading">
+            <span class="section-number">1</span>
+            <div>
+              <h2>基本資料</h2>
+              <p>日期、科部與會議主題會顯示在列印版本。</p>
+            </div>
+          </div>
+          <div class="form-grid form-grid-2">
+            <label class="field">
+              <span>科、部名稱</span>
+              <input name="department" type="text" placeholder="例如：小兒（不需再輸入「科／部」）" autocomplete="organization" required />
+            </label>
+            <label class="field">
+              <span>研討會日期</span>
+              <input name="meetingDate" type="date" required />
+            </label>
+          </div>
+          <label class="field">
+            <span>研討主題</span>
+            <input name="topic" type="text" placeholder="輸入研討主題" required />
+          </label>
+        </section>
+
+        <section class="form-card">
+          <div class="section-heading">
+            <span class="section-number">2</span>
+            <div>
+              <h2>研討會名稱</h2>
+              <p>列印時會依原始模板顯示勾選框。</p>
+            </div>
+          </div>
+          <fieldset class="choice-grid" id="meeting-type-grid">
+            <legend class="sr-only">研討會名稱</legend>
+            <label class="choice"><input type="radio" name="meetingType" value="1" /><span><b>1</b> 臨床研討會</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="2" /><span><b>2</b> 死亡暨倂發症討論會</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="3" /><span><b>3</b> 臨床病理討論會</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="4" /><span><b>4</b> 外科組織病理討論會</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="5" /><span><b>5</b> 聯合討論會</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="6" /><span><b>6</b> 術前/後討論會</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="7" /><span><b>7</b> 學術期刊討論會</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="8" /><span><b>8</b> 晨報會（新入院病例）</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="9" /><span><b>9</b> 教學</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="10" /><span><b>10</b> 外賓專題演講</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="11" /><span><b>11</b> 醫法倫討論</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="12" /><span><b>12</b> 專題討論</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="13" /><span><b>13</b> 見實習醫學生小組討論</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="14" /><span><b>14</b> 其他</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="15" /><span><b>15</b> 教學門診</span></label>
+            <label class="choice"><input type="radio" name="meetingType" value="16" /><span><b>16</b> 住診教學</span></label>
+          </fieldset>
+
+          <div id="joint-subtype" class="conditional-panel" hidden>
+            <p class="field-label">聯合討論會類型</p>
+            <div class="inline-choices">
+              <label><input type="radio" name="meetingSubtype" value="5-1" /> 5-1 跨科、部</label>
+              <label><input type="radio" name="meetingSubtype" value="5-2" /> 5-2 跨領域</label>
+              <label><input type="radio" name="meetingSubtype" value="5-3" /> 5-3 院際</label>
+            </div>
+          </div>
+
+          <div id="teaching-subtype" class="conditional-panel" hidden>
+            <p class="field-label">教學類型</p>
+            <div class="inline-choices">
+              <label><input type="radio" name="meetingSubtype" value="9-1" /> 9-1 專題、教學演講</label>
+              <label><input type="radio" name="meetingSubtype" value="9-2" /> 9-2 座談會</label>
+              <label><input type="radio" name="meetingSubtype" value="9-3" /> 9-3 全院學術</label>
+            </div>
+          </div>
+
+          <label id="other-type-field" class="field conditional-panel" hidden>
+            <span>其他類型說明</span>
+            <input name="otherMeetingType" type="text" placeholder="請填寫其他研討會名稱" />
+          </label>
+        </section>
+
+        <section class="form-card">
+          <div class="section-heading">
+            <span class="section-number">3</span>
+            <div>
+              <h2>會議資訊</h2>
+              <p>手機填寫時可先保留未完成欄位，列印前再補齊。</p>
+            </div>
+          </div>
+          <div class="form-grid form-grid-2">
+            <label class="field">
+              <span>報告人</span>
+              <input name="reporter" type="text" autocomplete="name" />
+            </label>
+            <label class="field">
+              <span>主持人</span>
+              <input name="chairperson" type="text" autocomplete="name" />
+            </label>
+            <label class="field">
+              <span>開始時間</span>
+              <input name="startTime" type="time" />
+            </label>
+            <label class="field">
+              <span>結束時間</span>
+              <input name="endTime" type="time" />
+            </label>
+            <label class="field">
+              <span>地點</span>
+              <input name="location" type="text" />
+            </label>
+            <label class="field">
+              <span>參加人數</span>
+              <input name="participantCount" type="number" inputmode="numeric" min="0" step="1" />
+            </label>
+          </div>
+        </section>
+
+        <section class="form-card">
+          <div class="section-heading">
+            <span class="section-number">4</span>
+            <div>
+              <h2>討論內容摘要（或全文）</h2>
+              <p>一個欄位連續輸入，列印時會自動分配至第一頁與續頁。</p>
+            </div>
+          </div>
+          <div class="guidance" id="summary-guidance">
+            <strong>模板備註：</strong>
+            <span>臨床與病理類研討會應依病例報告、討論、分析、總結、參考文獻之順序書寫；學術期刊討論會須載明期刊出處及當場討論內容。</span>
+          </div>
+          <label class="field">
+            <span class="sr-only">討論內容摘要</span>
+            <textarea name="summary" rows="18" placeholder="可直接在會議中用手機逐段記錄……"></textarea>
+          </label>
+          <p id="summary-count" class="muted compact text-right">0 字</p>
+        </section>
+
+        <section class="form-card">
+          <div class="section-heading">
+            <span class="section-number">5</span>
+            <div>
+              <h2>記錄與批閱</h2>
+              <p>可輸入姓名，或保留空白後於紙本簽名。</p>
+            </div>
+          </div>
+          <div class="form-grid form-grid-2">
+            <label class="field">
+              <span>記錄</span>
+              <input name="recorder" type="text" autocomplete="name" />
+            </label>
+            <label class="field">
+              <span>主持人（或主任）批閱</span>
+              <input name="reviewer" type="text" autocomplete="name" />
+            </label>
+          </div>
+        </section>
+      </form>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="print-root" aria-hidden="true"></div>
+
+  <?!= include('Client'); ?>
+</body>
+</html>
